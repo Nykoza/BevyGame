@@ -4,6 +4,7 @@ use bevy::{
     window::WindowResized,
     window::{CursorGrabMode, PresentMode}
 };
+use bevy::pbr::wireframe::Wireframe;
 use bevy::prelude::KeyCode::D;
 use bevy::prelude::system_adapter::new;
 use bevy::window::WindowResolution;
@@ -11,6 +12,7 @@ use bevy::window::WindowResolution;
 const PLAYER_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
 const WALL_COLOR: Color = Color::rgb(0.3, 0.1, 0.7);
 const BOX_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
+const HOLE_COLOR: Color = Color::rgb(0.2, 0.5, 0.5);
 
 const CELL_SIZE: u32 = 25;
 
@@ -22,6 +24,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_resource(ClearColor(Color::rgb(0.04, 0.04, 0.04)))
         .add_startup_system(window_resize)
+        .add_startup_system(spawn_hole)
         .add_startup_system(spawn_player)
         .add_startup_system(spawn_map)
         .add_startup_system(spawn_box)
@@ -32,6 +35,7 @@ fn main() {
         .add_system(boxes_movement.before(player_movement).after(push_boxes_checks).in_base_set(CoreSet::FixedUpdate))
         .add_system(player_movement.after(boxes_movement).in_base_set(CoreSet::FixedUpdate))
         .add_systems((position_translation, size_scaling))
+        .add_system(check_win)
         .run();
 }
 
@@ -140,6 +144,24 @@ fn spawn_box(mut commands: Commands) {
         .insert(Size::square(0.7));
 }
 
+fn spawn_hole(mut commands: Commands) {
+    commands
+        .spawn(SpriteBundle {
+            sprite: Sprite {
+                color: HOLE_COLOR,
+                ..default()
+            },
+            transform: Transform {
+                scale: Vec3::new(10.0, 10.0, 10.0),
+                ..default()
+            },
+            ..default()
+        })
+        .insert(Hole)
+        .insert(Position { x: 3, y: 6})
+        .insert(Size::square(0.3));
+}
+
 fn spawn_map(mut commands: Commands) {
     let mut y = 0;
 
@@ -219,7 +241,7 @@ fn spawn_map(mut commands: Commands) {
     }
 }
 
-fn check_player_can_move(obstacles: &mut Query<&Position, (Without<Player>)>, new_pos: &Position) -> bool {
+fn check_player_can_move(obstacles: &mut Query<&Position, (Without<Player>, Without<Hole>)>, new_pos: &Position) -> bool {
     for obstacle_pos in obstacles.iter_mut() {
         if obstacle_pos.x == new_pos.x && obstacle_pos.y == new_pos.y {
             return false;
@@ -271,7 +293,7 @@ fn get_new_pos(direction: &Direction, position: &Position) -> Position {
 }
 
 fn player_movement(mut player_query: Query<(&mut Position, &mut Player), With<Player>>,
-                    mut obstacles: Query<&Position, (Without<Player>)>
+                    mut obstacles: Query<&Position, (Without<Player>, Without<Hole>)>
 ) {
     for (mut pos, mut player) in player_query.iter_mut() {
         let player_new_pos = get_new_pos(&player.direction, &pos);
@@ -293,7 +315,7 @@ fn boxes_movement(mut boxes: Query<(&mut Position, &mut Box)>) {
     }
 }
 
-fn push_boxes_checks(mut boxes: Query<(&Position, &mut Box), (Without<Player>, Without<Wall>)>, obstacles: Query<&Position, Without<Player>>) {
+fn push_boxes_checks(mut boxes: Query<(&Position, &mut Box), (Without<Player>, Without<Wall>, Without<Hole>)>, obstacles: Query<&Position, (Without<Player>, Without<Hole>)>) {
 
     for (pos, mut _box) in boxes.iter_mut() {
         if _box.push_direction == Direction::None {
@@ -325,6 +347,33 @@ fn push_boxes_direction(mut boxes: Query<(&mut Position, &mut Box), (With<Box>, 
     }
 }
 
+/*
+ Win condition
+*/
+
+fn is_hole_not_covered(hole_pos: &Position, boxes: &Query<&Position, With<Box>>) -> bool {
+    for _box in boxes.iter() {
+        if hole_pos.x == _box.x && hole_pos.y == _box.y {
+            return false
+        }
+    }
+    true
+}
+
+fn check_win(holes: Query<&Position, With<Hole>>, boxes: Query<&Position, With<Box>>) {
+    for hole_pos in holes.iter() {
+        if is_hole_not_covered(&hole_pos, &boxes) {
+            return;
+        }
+    }
+
+    println!("You won");
+}
+
+
+/*
+ Window changes, apply position
+ */
 fn size_scaling(mut windows: Query<&mut Window>, mut q: Query<(&Size, &mut Transform)>) {
     let mut window = windows.single_mut();
 
