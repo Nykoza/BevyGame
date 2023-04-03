@@ -4,6 +4,7 @@ use bevy::{
     window::WindowResized,
     window::{CursorGrabMode, PresentMode}
 };
+use bevy::prelude::KeyCode::D;
 use bevy::prelude::system_adapter::new;
 use bevy::window::WindowResolution;
 
@@ -25,7 +26,11 @@ fn main() {
         .add_startup_system(spawn_map)
         .add_startup_system(spawn_box)
         .add_startup_system(setup_camera)
-        .add_system(player_movement)
+        .add_system(player_direction.before(push_boxes_direction).in_base_set(CoreSet::FixedUpdate))
+        .add_system(push_boxes_direction.before(push_boxes_checks).after(player_direction).in_base_set(CoreSet::FixedUpdate))
+        .add_system(push_boxes_checks.before(boxes_movement).after(push_boxes_direction).in_base_set(CoreSet::FixedUpdate))
+        .add_system(boxes_movement.before(player_movement).after(push_boxes_checks).in_base_set(CoreSet::FixedUpdate))
+        .add_system(player_movement.after(boxes_movement).in_base_set(CoreSet::FixedUpdate))
         .add_systems((position_translation, size_scaling))
         .run();
 }
@@ -35,13 +40,17 @@ fn setup_camera(mut commands: Commands) {
 }
 
 #[derive(Component)]
-struct Player;
+struct Player {
+    direction: Direction,
+}
 
 #[derive(Component)]
 struct Wall;
 
 #[derive(Component)]
-struct Box;
+struct Box {
+    push_direction: Direction,
+}
 
 #[derive(Component)]
 struct Hole;
@@ -56,6 +65,14 @@ struct Position {
 struct Size {
     width: f32,
     height: f32,
+}
+#[derive(PartialEq, Copy, Clone)]
+enum Direction {
+    Left,
+    Up,
+    Right,
+    Down,
+    None
 }
 
 impl Size {
@@ -85,7 +102,7 @@ fn spawn_player(mut commands: Commands) {
             },
             ..default()
         })
-        .insert(Player)
+        .insert(Player { direction: Direction::None })
         .insert(Position { x: 3, y: 3})
         .insert(Size::square(0.8))
         .insert(MovementState { has_finished_movement: true });
@@ -103,8 +120,23 @@ fn spawn_box(mut commands: Commands) {
         },
         ..default()
     })
-        .insert(Box)
+        .insert(Box { push_direction: Direction::None })
         .insert(Position { x: 3, y: 4})
+        .insert(Size::square(0.7));
+
+    commands.spawn(SpriteBundle {
+        sprite: Sprite {
+            color: BOX_COLOR,
+            ..default()
+        },
+        transform: Transform {
+            scale: Vec3::new(10.0, 10.0, 10.0),
+            ..default()
+        },
+        ..default()
+    })
+        .insert(Box { push_direction: Direction::None })
+        .insert(Position { x: 3, y: 5})
         .insert(Size::square(0.7));
 }
 
@@ -187,60 +219,33 @@ fn spawn_map(mut commands: Commands) {
     }
 }
 
-fn check_can_move(walls: &mut Query<(Entity, &Position), (With<Wall>, Without<Player>)>, new_pos: &Position) -> bool {
-    for (e, wall_pos) in walls.iter_mut() {
-        if wall_pos.x == new_pos.x && wall_pos.y == new_pos.y {
+fn check_player_can_move(obstacles: &mut Query<&Position, (Without<Player>)>, new_pos: &Position) -> bool {
+    for obstacle_pos in obstacles.iter_mut() {
+        if obstacle_pos.x == new_pos.x && obstacle_pos.y == new_pos.y {
             return false;
         }
     }
     true
 }
 
-fn player_movement(keyboard_input: Res<Input<KeyCode>>,
-                    mut player: Query<(&mut Position, &mut MovementState), With<Player>>,
-                    mut walls:  Query<(Entity, &Position), (With<Wall>, Without<Player>)>
-) {
-    for (mut pos, mut mov) in player.iter_mut() {
+fn player_direction(keyboard_input: Res<Input<KeyCode>>, mut player_query: Query<(&mut Player, &mut MovementState), With<Player>>) {
+    for (mut player, mut mov) in player_query.iter_mut() {
         if mov.has_finished_movement {
             if keyboard_input.pressed(KeyCode::Left) {
-                let new_pos = Position {x: pos.x - 1, y: pos.y };
-                let can_move = check_can_move(&mut walls, &new_pos);
-
-                if can_move {
-                    pos.x = new_pos.x;
-                    pos.y = new_pos.y;
-                    mov.has_finished_movement = false;
-                }
+                player.direction = Direction::Left;
+                mov.has_finished_movement = false;
             }
             if keyboard_input.pressed(KeyCode::Right) {
-                let new_pos = Position {x: pos.x + 1, y: pos.y };
-                let can_move = check_can_move(&mut walls, &new_pos);
-
-                if can_move {
-                    pos.x = new_pos.x;
-                    pos.y = new_pos.y;
-                    mov.has_finished_movement = false;
-                }
+                player.direction = Direction::Right;
+                mov.has_finished_movement = false;
             }
             if keyboard_input.pressed(KeyCode::Down) {
-                let new_pos = Position {x: pos.x, y: pos.y - 1 };
-                let can_move = check_can_move(&mut walls, &new_pos);
-
-                if can_move {
-                    pos.x = new_pos.x;
-                    pos.y = new_pos.y;
-                    mov.has_finished_movement = false;
-                }
+                player.direction = Direction::Down;
+                mov.has_finished_movement = false;
             }
             if keyboard_input.pressed(KeyCode::Up) {
-                let new_pos = Position {x: pos.x, y: pos.y + 1 };
-                let can_move = check_can_move(&mut walls, &new_pos);
-
-                if can_move {
-                    pos.x = new_pos.x;
-                    pos.y = new_pos.y;
-                    mov.has_finished_movement = false;
-                }
+                player.direction = Direction::Up;
+                mov.has_finished_movement = false;
             }
         } else {
             if keyboard_input.any_just_released([KeyCode::Left, KeyCode::Right, KeyCode::Down, KeyCode::Up]) {
@@ -250,7 +255,77 @@ fn player_movement(keyboard_input: Res<Input<KeyCode>>,
     }
 }
 
-fn size_scaling(mut windows: Query<&mut Window>, mut q: Query<(&Size, &mut Transform)>){
+fn get_new_pos(direction: &Direction, position: &Position) -> Position {
+    if *direction == Direction::None {
+        return *position;
+    } else if *direction == Direction::Left {
+        return Position { x: position.x - 1, y: position.y }
+    } else if *direction == Direction::Right {
+        return Position { x: position.x + 1, y: position.y }
+    } else if *direction == Direction::Up {
+        return Position { x: position.x, y: position.y + 1 }
+    } else if *direction == Direction::Down {
+        return Position { x: position.x, y: position.y - 1 }
+    }
+    return *position;
+}
+
+fn player_movement(mut player_query: Query<(&mut Position, &mut Player), With<Player>>,
+                    mut obstacles: Query<&Position, (Without<Player>)>
+) {
+    for (mut pos, mut player) in player_query.iter_mut() {
+        let player_new_pos = get_new_pos(&player.direction, &pos);
+        let can_move = check_player_can_move(&mut obstacles, &player_new_pos);
+
+        player.direction = Direction::None;
+        if can_move {
+            *pos = player_new_pos;
+        }
+    }
+}
+
+fn boxes_movement(mut boxes: Query<(&mut Position, &mut Box)>) {
+    for (mut position, mut _box) in boxes.iter_mut() {
+        if _box.push_direction != Direction::None {
+            *position = get_new_pos(&_box.push_direction, &position);
+            _box.push_direction = Direction::None;
+        }
+    }
+}
+
+fn push_boxes_checks(mut boxes: Query<(&Position, &mut Box), (Without<Player>, Without<Wall>)>, obstacles: Query<&Position, Without<Player>>) {
+
+    for (pos, mut _box) in boxes.iter_mut() {
+        if _box.push_direction == Direction::None {
+            continue;
+        }
+        let box_new_pos = get_new_pos(&_box.push_direction, &pos);
+
+        for obstacle_pos in obstacles.iter() {
+            if obstacle_pos.x == box_new_pos.x && obstacle_pos.y == box_new_pos.y {
+                _box.push_direction = Direction::None;
+                return;
+            }
+        }
+    }
+}
+
+fn push_boxes_direction(mut boxes: Query<(&mut Position, &mut Box), (With<Box>, Without<Player>, Without<Wall>)>,
+                        mut player: Query<(&mut Position, &mut Player), (With<Player>, Without<Box>, Without<Wall>)>
+              ) {
+    let (mut player_position, mut player) = player.single_mut();
+
+    let new_player_pos = get_new_pos(&player.direction, &player_position);
+
+    for (mut box_position, mut _box) in boxes.iter_mut() {
+
+        if new_player_pos.x == box_position.x && new_player_pos.y == box_position.y {
+            _box.push_direction = player.direction;
+        }
+    }
+}
+
+fn size_scaling(mut windows: Query<&mut Window>, mut q: Query<(&Size, &mut Transform)>) {
     let mut window = windows.single_mut();
 
     for (sprite_size, mut transform) in q.iter_mut() {
