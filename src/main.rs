@@ -11,6 +11,7 @@ use bevy::window::WindowResolution;
 const PLAYER_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
 const WALL_COLOR: Color = Color::rgb(0.3, 0.1, 0.7);
 const BOX_COLOR: Color = Color::rgb(1.0, 0.5, 0.5);
+const HOLE_COLOR: Color = Color::rgb(0.2, 0.5, 0.5);
 
 const CELL_SIZE: u32 = 25;
 
@@ -25,6 +26,7 @@ fn main() {
         .add_startup_system(spawn_player)
         .add_startup_system(spawn_map)
         .add_startup_system(spawn_box)
+        .add_startup_system(spawn_holes)
         .add_startup_system(setup_camera)
         .add_system(player_direction.before(push_boxes_direction).in_base_set(CoreSet::FixedUpdate))
         .add_system(push_boxes_direction.before(push_boxes_checks).after(player_direction).in_base_set(CoreSet::FixedUpdate))
@@ -51,6 +53,9 @@ struct Wall;
 struct Box {
     push_direction: Direction,
 }
+
+#[derive(Component)]
+struct Obstacle;
 
 #[derive(Component)]
 struct Hole;
@@ -136,8 +141,26 @@ fn spawn_box(mut commands: Commands) {
         ..default()
     })
         .insert(Box { push_direction: Direction::None })
+        .insert(Obstacle)
         .insert(Position { x: 3, y: 5})
         .insert(Size::square(0.7));
+}
+
+fn spawn_holes(mut commands: Commands) {
+    commands.spawn(SpriteBundle {
+        sprite: Sprite {
+            color: HOLE_COLOR,
+            ..default()
+        },
+        transform: Transform {
+            scale: Vec3::new(10.0, 10.0, 10.0),
+            ..default()
+        },
+        ..default()
+    })
+        .insert(Hole)
+        .insert(Position { x: 3, y: 6})
+        .insert(Size::square(0.2));
 }
 
 fn spawn_map(mut commands: Commands) {
@@ -156,6 +179,7 @@ fn spawn_map(mut commands: Commands) {
             ..default()
         })
             .insert(Wall)
+            .insert(Obstacle)
             .insert(Position { x: 0, y: y as i32 })
             .insert(Size::square(0.9));
         y += 1;
@@ -219,7 +243,7 @@ fn spawn_map(mut commands: Commands) {
     }
 }
 
-fn check_player_can_move(obstacles: &mut Query<&Position, (Without<Player>)>, new_pos: &Position) -> bool {
+fn check_player_can_move(obstacles: &mut Query<&Position, With<Obstacle>>, new_pos: &Position) -> bool {
     for obstacle_pos in obstacles.iter_mut() {
         if obstacle_pos.x == new_pos.x && obstacle_pos.y == new_pos.y {
             return false;
@@ -271,7 +295,7 @@ fn get_new_pos(direction: &Direction, position: &Position) -> Position {
 }
 
 fn player_movement(mut player_query: Query<(&mut Position, &mut Player), With<Player>>,
-                    mut obstacles: Query<&Position, (Without<Player>)>
+                    mut obstacles: Query<&Position, With<Obstacle>>
 ) {
     for (mut pos, mut player) in player_query.iter_mut() {
         let player_new_pos = get_new_pos(&player.direction, &pos);
@@ -293,7 +317,7 @@ fn boxes_movement(mut boxes: Query<(&mut Position, &mut Box)>) {
     }
 }
 
-fn push_boxes_checks(mut boxes: Query<(&Position, &mut Box), (Without<Player>, Without<Wall>)>, obstacles: Query<&Position, Without<Player>>) {
+fn push_boxes_checks(mut boxes: Query<(&Position, &mut Box), (Without<Player>, Without<Wall>)>, obstacles: Query<&Position, With<Obstacle>>) {
 
     for (pos, mut _box) in boxes.iter_mut() {
         if _box.push_direction == Direction::None {
